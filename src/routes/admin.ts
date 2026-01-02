@@ -20,11 +20,10 @@ router.post('/ai/generate', async (req: Request, res: Response) => {
         const { iso3 } = req.body;
 
         if (!iso3 || typeof iso3 !== 'string') {
-            res.status(400).json({
+            return res.status(400).json({
                 success: false,
                 error: 'ISO3 country code required'
             });
-            return;
         }
 
         // Get all sources for this country
@@ -35,11 +34,10 @@ router.post('/ai/generate', async (req: Request, res: Response) => {
         }).lean();
 
         if (sources.length === 0) {
-            res.status(404).json({
+            return res.status(404).json({
                 success: false,
                 error: 'No active sources found for this country'
             });
-            return;
         }
 
         // Get country details
@@ -76,21 +74,19 @@ router.post('/sources/fetch', async (req: Request, res: Response) => {
         const { sourceId } = req.body;
 
         if (!sourceId) {
-            res.status(400).json({
+            return res.status(400).json({
                 success: false,
                 error: 'Source ID required'
             });
-            return;
         }
 
         const source = await SourceModel.findById(sourceId);
 
         if (!source) {
-            res.status(404).json({
+            return res.status(404).json({
                 success: false,
                 error: 'Source not found'
             });
-            return;
         }
 
         const result = await fetchAndExtractSource(source);
@@ -124,12 +120,11 @@ router.post('/updates/run', async (req: Request<{}, {}, { specificCountry?: stri
         // Check if there's already a running job
         const runningJob = await UpdateJobModel.findOne({ status: 'running' });
         if (runningJob) {
-            res.status(409).json({
+            return res.status(409).json({
                 success: false,
                 error: 'An update job is already running',
                 jobId: runningJob._id
             });
-            return;
         }
 
         console.log(`📋 Starting update job${specificCountry ? ` for ${specificCountry}` : ' for ALL countries'}...`);
@@ -221,11 +216,10 @@ router.get('/sources/:id', async (req: Request, res: Response) => {
         const source = await SourceModel.findById(req.params.id).lean();
 
         if (!source) {
-            res.status(404).json({
+            return res.status(404).json({
                 success: false,
                 error: 'Source not found'
             });
-            return;
         }
 
         res.json({
@@ -398,40 +392,36 @@ router.put('/countries/:iso3/summary', async (req: Request, res: Response) => {
         const userId = req.user?.userId;
 
         if (!iso3) {
-            res.status(400).json({
+            return res.status(400).json({
                 success: false,
                 error: 'ISO3 country code required'
             });
-            return;
         }
 
         if (!summary) {
-            res.status(400).json({
+            return res.status(400).json({
                 success: false,
                 error: 'Summary data required'
             });
-            return;
         }
 
         // Validate summary format
         const validation = validateSummary(summary);
         if (!validation.valid) {
-            res.status(400).json({
+            return res.status(400).json({
                 success: false,
                 error: 'Validation failed',
                 validationErrors: validation.errors
             });
-            return;
         }
 
         // Find the country
         const country = await CountryModel.findOne({ iso3: iso3.toUpperCase() });
         if (!country) {
-            res.status(404).json({
+            return res.status(404).json({
                 success: false,
                 error: 'Country not found'
             });
-            return;
         }
 
         // Build sanitized summary
@@ -505,11 +495,10 @@ router.get('/countries/:iso3', async (req: Request, res: Response) => {
         const country = await CountryModel.findOne({ iso3: iso3.toUpperCase() }).lean();
 
         if (!country) {
-            res.status(404).json({
+            return res.status(404).json({
                 success: false,
                 error: 'Country not found'
             });
-            return;
         }
 
         res.json({
