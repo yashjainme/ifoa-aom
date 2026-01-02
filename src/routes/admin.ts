@@ -42,7 +42,7 @@ router.post('/ai/generate', async (req: Request, res: Response) => {
 
         // Get country details
         const country = await CountryModel.findOne({ iso3: iso3.toUpperCase() });
-        const countryName = country?.country || iso3.toUpperCase();
+        const countryName = (country?.country as string) || iso3.toUpperCase();
 
         // Generate summary using LLM
         const result = await generateCountrySummary(
