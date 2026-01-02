@@ -12,13 +12,19 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
 app.use(cors({
-    origin: [process.env.FRONTEND_URL || 'http://localhost:5173',
-        'http://localhost:5173'
+    origin: [
+        'https://theifoa-agent.com', // ✅ production frontend
+        'http://localhost:5173'      // ✅ local dev
     ],
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// ✅ VERY IMPORTANT for preflight
+app.options('*', cors());
+
 app.use(express.json({ limit: '10mb' }));
 
 // Routes - ORDER MATTERS: auth must come before admin (which has auth middleware)
