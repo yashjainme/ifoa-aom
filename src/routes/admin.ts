@@ -116,10 +116,10 @@ router.post('/sources/fetch', async (req: Request, res: Response) => {
 
 // POST /api/updates/run - Trigger manual update job
 // Body: { specificCountry?: 'ISO3' } - Process specific country or all countries
-router.post('/updates/run', async (req: Request, res: Response) => {
+router.post('/updates/run', async (req: Request<{}, {}, { specificCountry?: string }>, res: Response) => {
     try {
         const userId = req.user?.userId;
-        const specificCountry = (req.body.specificCountry as string | undefined)?.toUpperCase();
+        const specificCountry = req.body.specificCountry?.toUpperCase();
 
         // Check if there's already a running job
         const runningJob = await UpdateJobModel.findOne({ status: 'running' });
