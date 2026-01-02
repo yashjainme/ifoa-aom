@@ -119,7 +119,7 @@ router.post('/sources/fetch', async (req: Request, res: Response) => {
 router.post('/updates/run', async (req: Request, res: Response) => {
     try {
         const userId = req.user?.userId;
-        const specificCountry = req.body.specificCountry?.toUpperCase();
+        const specificCountry = (req.body.specificCountry as string | undefined)?.toUpperCase();
 
         // Check if there's already a running job
         const runningJob = await UpdateJobModel.findOne({ status: 'running' });
@@ -472,7 +472,7 @@ router.put('/countries/:iso3/summary', async (req: Request, res: Response) => {
                 $set: {
                     summary: sanitizedSummary,
                     lastUpdated: new Date().toISOString(),
-                    version: (country.version || 0) + 1
+                    version: ((country.version as number) || 0) + 1
                 }
             }
         );
@@ -526,4 +526,3 @@ router.get('/countries/:iso3', async (req: Request, res: Response) => {
 });
 
 export default router;
-
