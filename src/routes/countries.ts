@@ -42,14 +42,27 @@ router.get('/countries', async (req: Request, res: Response) => {
         }
 
         const countries = await CountryModel.find(query)
-            .select('country iso3 region flagUrl requires_permit embargo lastUpdated')
+            .select('country iso3 region flagUrl requires_permit embargo lastUpdated summary')
             .sort({ country: 1 })
             .lean();
 
+        // Add hasSummary field based on whether ops_notes exists and has items
+        const countriesWithSummaryStatus = countries.map(c => ({
+            _id: c._id,
+            country: c.country,
+            iso3: c.iso3,
+            region: c.region,
+            flagUrl: c.flagUrl,
+            requires_permit: c.requires_permit,
+            embargo: c.embargo,
+            lastUpdated: c.lastUpdated,
+            hasSummary: !!(c.summary && c.summary.ops_notes && c.summary.ops_notes.length > 0)
+        }));
+
         res.json({
             success: true,
-            data: countries,
-            count: countries.length
+            data: countriesWithSummaryStatus,
+            count: countriesWithSummaryStatus.length
         });
     } catch (error) {
         console.error('Error fetching countries:', error);
