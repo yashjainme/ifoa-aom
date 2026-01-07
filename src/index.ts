@@ -49,8 +49,10 @@ async function start() {
         await connectDB();
         console.log('✅ MongoDB connected');
 
-        startScheduler();
-        console.log('✅ Scheduler initialized');
+        // TODO: Implement proper scheduler with missed job recovery
+        // Currently disabled - jobs can still be triggered manually via admin API
+        // startScheduler();
+        // console.log('✅ Scheduler initialized');
 
         app.listen(PORT, () => {
             console.log(`🚀 Server running on http://localhost:${PORT}`);

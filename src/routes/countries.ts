@@ -46,18 +46,27 @@ router.get('/countries', async (req: Request, res: Response) => {
             .sort({ country: 1 })
             .lean();
 
-        // Add hasSummary field based on whether ops_notes exists and has items
-        const countriesWithSummaryStatus = countries.map(c => ({
-            _id: c._id,
-            country: c.country,
-            iso3: c.iso3,
-            region: c.region,
-            flagUrl: c.flagUrl,
-            requires_permit: c.requires_permit,
-            embargo: c.embargo,
-            lastUpdated: c.lastUpdated,
-            hasSummary: !!(c.summary && c.summary.ops_notes && c.summary.ops_notes.length > 0)
-        }));
+        // Add hasSummary and isComplete fields
+        // hasSummary = has ops_notes (determines if country has ANY data)
+        // isComplete = has ops_notes AND authorities_contacts AND references
+        const countriesWithSummaryStatus = countries.map(c => {
+            const hasOpsNotes = !!(c.summary && c.summary.ops_notes && c.summary.ops_notes.length > 0);
+            const hasAuthorities = !!(c.summary && c.summary.authorities_contacts && c.summary.authorities_contacts.length > 0);
+            const hasReferences = !!(c.summary && c.summary.references && c.summary.references.length > 0);
+
+            return {
+                _id: c._id,
+                country: c.country,
+                iso3: c.iso3,
+                region: c.region,
+                flagUrl: c.flagUrl,
+                requires_permit: c.requires_permit,
+                embargo: c.embargo,
+                lastUpdated: c.lastUpdated,
+                hasSummary: hasOpsNotes,
+                isComplete: hasOpsNotes && hasAuthorities && hasReferences
+            };
+        });
 
         res.json({
             success: true,
