@@ -36,6 +36,8 @@ interface CountrySummary {
     primary_contact: PrimaryContact;
     status: string[];
     permit_and_conditions: string[];
+    overflight_permits: string[];
+    landing_permits: string[];
     israel_limitation: string[];
     key_extracts: string[];
     ops_notes: string[];
@@ -93,11 +95,22 @@ OUTPUT FORMAT (Return ONLY valid JSON with no markdown):
       "-> Active restrictions: [Specific limitations with dates, or 'Standard ICAO procedures apply']"
     ],
     "permit_and_conditions": [
-      "-> Application requirements: [Specific documents]. Submit to [email/portal] with [lead time]",
-      "-> Operator must hold [license type] from [authority]. Fee: [amount if known]",
+      "-> General permit requirements applicable to BOTH overflight AND landing operations",
       "-> Insurance: [Minimum coverage amount and regulation reference]",
-      "-> Processing time: [Specific timeframe]. Expedited options: [if available]",
-      "-> Ground handling: [Certified handler requirements and advance notice period]"
+      "-> Dangerous goods certificate: [Requirements and issuing authority]"
+    ],
+    "overflight_permits": [
+      "-> Overflight permit required from [authority]. Submit via [method] at least [timeframe] before flight",
+      "-> Overflight fees: [amount if known]. Payment via [method]",
+      "-> Prohibited zones: [specific airspace restrictions, FIR requirements]",
+      "-> Route approval: [corridor requirements, navigation points]"
+    ],
+    "landing_permits": [
+      "-> Airport permit required from [authority]. Application via [method/portal]",
+      "-> Ground handler must be [certified type] and notified [timeframe] in advance",
+      "-> Airport security: [specific inspections, restricted parking areas, security zone requirements]",
+      "-> Customs pre-notification: Submit [documents] via [system] by [timeframe before arrival]",
+      "-> Airport-specific restrictions: [fueling procedures, parking positions for munitions cargo]"
     ],
     "israel_limitation": [
       "-> [Specific policy on Israel-origin/destination cargo, or 'No specific restrictions identified']",
@@ -154,6 +167,7 @@ CRITICAL VALIDATION RULES:
 8. Include at least 2 authority contacts if available (permits office + operations/customs)
 9. Cite specific AIP sections and regulation articles with exact titles
 10. Vary sentence structure - avoid formulaic repetition
+11. LIMIT references to 10 most important/official sources only - prioritize government and AIP sources
 
 Generate the brief for:`;
 
@@ -165,7 +179,7 @@ function buildPrompt(country: string, iso3: string): string {
 }
 
 /**
- * Call Gemini API with optimized settings for accuracy
+ * Call Gemini API with fallback models and optimized settings
  */
 async function callGeminiApi(prompt: string): Promise<string> {
     const apiKey = process.env.LLM_API_KEY;
@@ -174,93 +188,146 @@ async function callGeminiApi(prompt: string): Promise<string> {
         throw new Error('LLM_API_KEY environment variable not set. Get your key from https://aistudio.google.com/app/apikey');
     }
 
-    // Use Gemini 2.0 Flash Thinking for better reasoning, or Pro for complex cases
-    const modelName = process.env.LLM_MODEL || 'gemini-2.0-flash-thinking-exp-1219';
+    // Fallback models in priority order
+    const primaryModel = process.env.LLM_MODEL || 'gemini-2.5-flash-lite';
+    const fallbackModels = [
+        primaryModel,
+        'gemini-2.5-flash-lite-preview-09-2025',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-preview-09-2025',
+    ].filter((m, i, arr) => arr.indexOf(m) === i); // Remove duplicates if primary is in list
 
-    console.log(`   🤖 Calling Gemini API with Google Search Grounding...`);
-    console.log(`   📍 Model: ${modelName}`);
-    console.log(`   ⏱️ Starting API call at ${new Date().toISOString()}`);
+    let lastError: Error | null = null;
 
-    // Extended timeout for thinking models - 2 minutes
-    const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Gemini API call timed out after 120 seconds')), 120000);
-    });
+    // Try each model until one succeeds
+    for (const modelName of fallbackModels) {
+        try {
+            console.log(`   🤖 Calling Gemini API with Google Search Grounding...`);
+            console.log(`   📍 Model: ${modelName}${modelName !== primaryModel ? ' (fallback)' : ''}`);
+            console.log(`   ⏱️ Starting API call at ${new Date().toISOString()}`);
 
-    try {
-        const genAI = new GoogleGenerativeAI(apiKey);
+            // Extended timeout - 2 minutes
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error(`Gemini API call timed out after 120 seconds (model: ${modelName})`)), 120000);
+            });
 
-        // Optimized generation config for accuracy
-        const model = genAI.getGenerativeModel({
-            model: modelName,
-            generationConfig: {
-                temperature: 0.2, // Lower for more consistent, factual output
-                topP: 0.8,
-                topK: 30,
-                maxOutputTokens: 16384, // Doubled from 8192 for complete responses
-            },
-            // Enable Google Search grounding with dynamic retrieval
-            tools: [{
-                googleSearch: {}
-            }] as any
-        });
+            const genAI = new GoogleGenerativeAI(apiKey);
 
-        console.log(`   📡 Sending request to Gemini...`);
-        const result = await Promise.race([
-            model.generateContent(prompt),
-            timeoutPromise
-        ]);
+            // Generation config with 8k token limit to avoid truncation issues
+            const model = genAI.getGenerativeModel({
+                model: modelName,
+                generationConfig: {
+                    temperature: 0.2, // Lower for more consistent, factual output
+                    topP: 0.8,
+                    topK: 30,
+                    maxOutputTokens: 8192, // 8k tokens to avoid truncation
+                },
+                // Enable Google Search grounding with dynamic retrieval
+                tools: [{
+                    googleSearch: {}
+                }] as any
+            });
 
-        console.log(`   📨 Got response from Gemini`);
-        const response = result.response;
-        const text = response.text();
-        console.log(`   📝 Response: ${text}`);
+            console.log(`   📡 Sending request to Gemini...`);
+            const result = await Promise.race([
+                model.generateContent(prompt),
+                timeoutPromise
+            ]);
 
-        if (!text) {
-            throw new Error('Empty response from Gemini API');
+            console.log(`   📨 Got response from Gemini`);
+            const response = result.response;
+            const text = response.text();
+            console.log(`   📝 Response: ${text}`);
+
+            if (!text) {
+                throw new Error('Empty response from Gemini API');
+            }
+
+            // Enhanced grounding metadata logging
+            const candidate = response.candidates?.[0];
+            if (candidate?.groundingMetadata) {
+                const gm = candidate.groundingMetadata as any;
+                if (gm.webSearchQueries) {
+                    console.log(`   🔍 Search queries executed: ${gm.webSearchQueries.length}`);
+                    console.log(`   📝 Sample queries: ${gm.webSearchQueries.slice(0, 3).join(', ')}`);
+                }
+                if (gm.groundingChunks) {
+                    console.log(`   📚 Grounding sources used: ${gm.groundingChunks.length}`);
+                }
+                if (gm.groundingSupport) {
+                    console.log(`   ✓ Grounding confidence: High`);
+                }
+            }
+
+            console.log(`   ✅ Response received (${text.length} characters)`);
+            return text;
+        } catch (error) {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            console.error(`   ❌ Error with model ${modelName}: ${errMsg}`);
+            lastError = error instanceof Error ? error : new Error(errMsg);
+
+            // Continue to next fallback model
+            if (fallbackModels.indexOf(modelName) < fallbackModels.length - 1) {
+                console.log(`   🔄 Trying next fallback model...`);
+            }
         }
-
-        // Enhanced grounding metadata logging
-        const candidate = response.candidates?.[0];
-        if (candidate?.groundingMetadata) {
-            const gm = candidate.groundingMetadata as any;
-            if (gm.webSearchQueries) {
-                console.log(`   🔍 Search queries executed: ${gm.webSearchQueries.length}`);
-                console.log(`   📝 Sample queries: ${gm.webSearchQueries.slice(0, 3).join(', ')}`);
-            }
-            if (gm.groundingChunks) {
-                console.log(`   📚 Grounding sources used: ${gm.groundingChunks.length}`);
-            }
-            if (gm.groundingSupport) {
-                console.log(`   ✓ Grounding confidence: High`);
-            }
-        }
-
-        console.log(`   ✅ Response received (${text.length} characters)`);
-        return text;
-    } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        console.error(`   ❌ Gemini API Error: ${errMsg}`);
-        throw error;
     }
+
+    // All models failed
+    throw new Error(`All LLM models failed. Last error: ${lastError?.message || 'Unknown error'}`);
 }
 
 /**
- * Enhanced JSON parsing with better recovery
+ * Enhanced JSON parsing with truncation recovery and duplicate detection
  */
 function parseResponse(response: string): LlmOutput {
     let jsonStr = response;
 
-    // Remove markdown code blocks
-    const jsonMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-        jsonStr = jsonMatch[1];
+    // First, check if ```json appears more than once (indicates duplicate/restart)
+    const jsonBlockCount = (jsonStr.match(/```json/g) || []).length;
+    if (jsonBlockCount > 1) {
+        console.log(`   ⚠️ Detected ${jsonBlockCount} JSON blocks - extracting first complete one`);
+        // Find first ```json and its closing ```
+        const firstStart = jsonStr.indexOf('```json');
+        const firstEnd = jsonStr.indexOf('```', firstStart + 7);
+        if (firstEnd !== -1) {
+            jsonStr = jsonStr.substring(firstStart + 7, firstEnd);
+        }
+    } else {
+        // Remove markdown code blocks - take first match only
+        const jsonMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+            jsonStr = jsonMatch[1];
+        }
+    }
+
+    // Check if we have embedded ```json inside the extracted content (malformed response)
+    const embeddedBlock = jsonStr.indexOf('```json');
+    if (embeddedBlock !== -1) {
+        console.log('   ⚠️ Found embedded ```json marker - truncating before it');
+        jsonStr = jsonStr.substring(0, embeddedBlock);
+    }
+
+    // If we still have duplicate JSON objects (without markdown), find the first complete one
+    const firstJsonStart = jsonStr.indexOf('{');
+    const secondJsonStart = jsonStr.indexOf('{\n  "country"', firstJsonStart + 1);
+    if (secondJsonStart !== -1 && secondJsonStart < jsonStr.length * 0.9) {
+        console.log('   ⚠️ Found second JSON object embedded - truncating to first');
+        jsonStr = jsonStr.substring(0, secondJsonStart);
     }
 
     // Extract JSON object
     const startIdx = jsonStr.indexOf('{');
-    const endIdx = jsonStr.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+    let endIdx = jsonStr.lastIndexOf('}');
+
+    if (startIdx !== -1) {
+        // Check if JSON appears truncated (missing closing braces)
+        if (endIdx === -1 || endIdx <= startIdx) {
+            console.log('   ⚠️ Detected truncated JSON - attempting recovery...');
+            jsonStr = jsonStr.substring(startIdx);
+        } else {
+            jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+        }
     }
 
     // Clean up common JSON issues
@@ -271,6 +338,28 @@ function parseResponse(response: string): LlmOutput {
         .replace(/\n\s*\n/g, '\n')
         .replace(/"\s*\+\s*"/g, '')
         .trim();
+
+    // Attempt to fix truncated JSON by adding missing brackets
+    const openBraces = (jsonStr.match(/{/g) || []).length;
+    const closeBraces = (jsonStr.match(/}/g) || []).length;
+    const openBrackets = (jsonStr.match(/\[/g) || []).length;
+    const closeBrackets = (jsonStr.match(/]/g) || []).length;
+
+    if (openBraces > closeBraces || openBrackets > closeBrackets) {
+        console.log(`   🔧 Fixing truncated JSON: ${openBraces} { vs ${closeBraces} }, ${openBrackets} [ vs ${closeBrackets} ]`);
+
+        // Remove any incomplete string (ends without closing quote)
+        jsonStr = jsonStr.replace(/"[^"]*$/, '""');
+
+        // Add missing closing brackets
+        const missingBrackets = openBrackets - closeBrackets;
+        const missingBraces = openBraces - closeBraces;
+
+        jsonStr += ']'.repeat(Math.max(0, missingBrackets));
+        jsonStr += '}'.repeat(Math.max(0, missingBraces));
+
+        console.log('   ✅ Added missing closing brackets');
+    }
 
     try {
         const parsed = JSON.parse(jsonStr);
@@ -296,12 +385,23 @@ function parseResponse(response: string): LlmOutput {
 
         const ensureRefArray = (val: unknown): Reference[] => {
             if (!Array.isArray(val)) return [];
-            return val.filter(r => r && typeof r === 'object').map((r, idx) => ({
-                id: String(r.id || `ref-${idx + 1}`),
-                title: String(r.title || '').trim(),
-                url: String(r.url || '').trim(),
-                fetchedAt: String(r.fetchedAt || new Date().toISOString())
-            })).filter(r => r.title && r.url); // Keep only valid references
+            return val
+                .filter(r => r && typeof r === 'object')
+                .map((r, idx) => ({
+                    id: String(r.id || `ref-${idx + 1}`),
+                    title: String(r.title || '').trim(),
+                    url: String(r.url || '').trim(),
+                    fetchedAt: String(r.fetchedAt || new Date().toISOString())
+                }))
+                // Filter out invalid/truncated references
+                .filter(r => {
+                    if (!r.title || !r.url) return false;
+                    // URL must start with http and not be truncated
+                    if (!r.url.startsWith('http')) return false;
+                    if (r.url.length < 20) return false; // Too short = truncated
+                    return true;
+                })
+                .slice(0, 10); // Limit to 10 references
         };
 
         const ensurePrimaryContact = (val: unknown): PrimaryContact => {
@@ -317,7 +417,7 @@ function parseResponse(response: string): LlmOutput {
         };
 
         const summary = parsed.summary;
-        
+
         const result: LlmOutput = {
             country: String(parsed.country).trim(),
             iso3: String(parsed.iso3).toUpperCase().trim(),
@@ -329,6 +429,8 @@ function parseResponse(response: string): LlmOutput {
                 primary_contact: ensurePrimaryContact(summary.primary_contact),
                 status: ensureArray(summary.status),
                 permit_and_conditions: ensureArray(summary.permit_and_conditions),
+                overflight_permits: ensureArray(summary.overflight_permits),
+                landing_permits: ensureArray(summary.landing_permits),
                 israel_limitation: ensureArray(summary.israel_limitation),
                 key_extracts: ensureArray(summary.key_extracts),
                 ops_notes: ensureArray(summary.ops_notes),
@@ -354,7 +456,7 @@ function parseResponse(response: string): LlmOutput {
         console.log(`   📞 Contact: ${result.summary.primary_contact.email || result.summary.primary_contact.phone || '(missing)'}`);
         console.log(`   📚 References: ${result.summary.references.length}`);
         console.log(`   👥 Contacts: ${result.summary.authorities_contacts.length}`);
-        
+
         return result;
     } catch (error) {
         console.error('   ❌ Initial parse failed, attempting recovery...');
@@ -378,6 +480,8 @@ function parseResponse(response: string): LlmOutput {
                     },
                     status: Array.isArray(parsed.summary?.status) ? parsed.summary.status : [],
                     permit_and_conditions: Array.isArray(parsed.summary?.permit_and_conditions) ? parsed.summary.permit_and_conditions : [],
+                    overflight_permits: Array.isArray(parsed.summary?.overflight_permits) ? parsed.summary.overflight_permits : [],
+                    landing_permits: Array.isArray(parsed.summary?.landing_permits) ? parsed.summary.landing_permits : [],
                     israel_limitation: Array.isArray(parsed.summary?.israel_limitation) ? parsed.summary.israel_limitation : [],
                     key_extracts: Array.isArray(parsed.summary?.key_extracts) ? parsed.summary.key_extracts : [],
                     ops_notes: Array.isArray(parsed.summary?.ops_notes) ? parsed.summary.ops_notes : [],

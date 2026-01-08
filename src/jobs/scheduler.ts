@@ -1,67 +1,114 @@
 import cron from 'node-cron';
 import { UpdateJobModel } from '../models/UpdateJob.js';
 import { CountryModel } from '../models/Country.js';
+import { CountryRunLogModel } from '../models/CountryRunLog.js';
 import { generateCountrySummary } from '../services/llm.js';
 import type { UpdateJob } from '../types/index.js';
 
-// Configuration
-const BATCH_SIZE = 20; // Process 20 countries per batch
-const SAVE_EVERY = 2; // Save to DB after every 2 countries
-const DELAY_BETWEEN_LLM_CALLS_MS = 5000; // 5 second delay between LLM calls
-const DELAY_BETWEEN_BATCHES_MS = 15000; // 15 second delay between batches
-const SKIP_IF_UPDATED_WITHIN_MS = 10 * 24 * 60 * 60 * 1000; // Skip if updated within 10 days
+// ============================================================
+// CONFIGURATION - AIRAC ALIGNED
+// ============================================================
+const CONFIG = {
+    // First run date (AIRAC aligned)
+    FIRST_RUN: '2026-01-23T02:00:00',
 
-// Parse scheduler interval (e.g., "28d", "7d", "1h")
-function parseInterval(interval: string): string {
-    const match = interval.match(/^(\d+)([dhm])$/);
-    if (!match) {
-        console.warn(`Invalid interval "${interval}", defaulting to 28 days`);
-        return '0 0 */28 * *';
-    }
+    // Cycle interval in days
+    CYCLE_DAYS: 28,
 
-    const value = parseInt(match[1], 10);
-    const unit = match[2];
+    // Batch processing
+    BATCH_SIZE: 20,
 
-    switch (unit) {
-        case 'd':
-            return `0 0 */${value} * *`;
-        case 'h':
-            return `0 */${value} * * *`;
-        case 'm':
-            return `*/${value} * * * *`;
-        default:
-            return '0 0 */28 * *';
-    }
-}
+    // Delays (in milliseconds)
+    DELAY_BETWEEN_LLM_CALLS_MS: 60 * 1000,      // 1 minute between LLM calls
+    DELAY_BETWEEN_BATCHES_MS: 2 * 60 * 1000,    // 2 minutes between batches
+
+    // Skip recently updated
+    SKIP_IF_UPDATED_WITHIN_MS: 24 * 60 * 60 * 1000,  // 24 hours
+
+    // Retry configuration
+    ERROR_THRESHOLD: 5,         // Number of failures to trigger retry
+    MAX_RETRIES: 3,             // Maximum retry attempts per country
+    RETRY_DELAY_MS: 30 * 60 * 1000,  // 30 minutes before retrying
+
+    // Progress save interval
+    SAVE_EVERY: 5
+};
 
 // Sleep helper
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Format duration
+function formatDuration(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${(ms / 60000).toFixed(1)}min`;
+}
+
 // Scheduler instance
 let scheduledTask: cron.ScheduledTask | null = null;
 
 /**
- * Initialize and start the scheduler
+ * Calculate next AIRAC run time
+ */
+function getNextAiracRun(): Date {
+    const firstRun = new Date(CONFIG.FIRST_RUN);
+    const now = new Date();
+
+    if (now < firstRun) {
+        return firstRun;
+    }
+
+    // Calculate cycles since first run
+    const msSinceFirst = now.getTime() - firstRun.getTime();
+    const cycleMs = CONFIG.CYCLE_DAYS * 24 * 60 * 60 * 1000;
+    const cyclesSinceFirst = Math.floor(msSinceFirst / cycleMs);
+
+    // Next run is one cycle after the last run
+    const nextRun = new Date(firstRun.getTime() + (cyclesSinceFirst + 1) * cycleMs);
+    return nextRun;
+}
+
+/**
+ * Initialize and start the AIRAC-aligned scheduler
  */
 export function startScheduler(): void {
-    const interval = process.env.SCHEDULER_INTERVAL || '28d';
-    const cronExpression = parseInterval(interval);
+    const nextRun = getNextAiracRun();
 
-    console.log(`📅 Scheduler configured with interval: ${interval} (cron: ${cronExpression})`);
+    console.log(`\n📅 AIRAC SCHEDULER CONFIGURATION`);
+    console.log(`${'─'.repeat(40)}`);
+    console.log(`   First run: ${CONFIG.FIRST_RUN}`);
+    console.log(`   Cycle: Every ${CONFIG.CYCLE_DAYS} days`);
+    console.log(`   Next scheduled run: ${nextRun.toISOString()}`);
+    console.log(`   Batch size: ${CONFIG.BATCH_SIZE} countries`);
+    console.log(`   LLM delay: ${CONFIG.DELAY_BETWEEN_LLM_CALLS_MS / 1000}s`);
+    console.log(`   Batch delay: ${CONFIG.DELAY_BETWEEN_BATCHES_MS / 1000}s`);
+    console.log(`   Skip if updated within: ${CONFIG.SKIP_IF_UPDATED_WITHIN_MS / (60 * 60 * 1000)}h`);
+    console.log(`   Error threshold: ${CONFIG.ERROR_THRESHOLD} failures → retry`);
+    console.log(`   Max retries: ${CONFIG.MAX_RETRIES}`);
+    console.log(`   Retry delay: ${CONFIG.RETRY_DELAY_MS / (60 * 1000)}min`);
+    console.log(`${'─'.repeat(40)}\n`);
 
-    scheduledTask = cron.schedule(cronExpression, async () => {
-        console.log('⏰ Scheduled job triggered');
-        try {
-            await runUpdateJob('scheduled');
-        } catch (error) {
-            console.error('Scheduled job failed:', error);
+    // Run daily check at 2:00 AM to see if it's an AIRAC day
+    scheduledTask = cron.schedule('0 2 * * *', async () => {
+        const today = new Date();
+        const nextAirac = getNextAiracRun();
+
+        // Check if today is an AIRAC day (within 1 hour of scheduled time)
+        const timeDiff = Math.abs(today.getTime() - nextAirac.getTime());
+        if (timeDiff < 60 * 60 * 1000) {
+            console.log('⏰ AIRAC scheduled run triggered');
+            try {
+                await runUpdateJob('scheduled');
+            } catch (error) {
+                console.error('Scheduled job failed:', error);
+            }
         }
     });
 
     scheduledTask.start();
-    console.log('✅ Scheduler started');
+    console.log('✅ AIRAC Scheduler started');
 }
 
 /**
@@ -72,6 +119,92 @@ export function stopScheduler(): void {
         scheduledTask.stop();
         scheduledTask = null;
         console.log('⏹️ Scheduler stopped');
+    }
+}
+
+/**
+ * Log a country run result to MongoDB
+ */
+async function logCountryRun(
+    jobId: any,
+    iso3: string,
+    country: string,
+    status: 'success' | 'failed' | 'skipped',
+    retryCount: number,
+    error?: string,
+    duration?: number
+): Promise<void> {
+    try {
+        await CountryRunLogModel.create({
+            jobId,
+            iso3,
+            country,
+            status,
+            error,
+            duration,
+            retryCount,
+            timestamp: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error(`   ⚠️ Failed to log run for ${iso3}:`, err);
+    }
+}
+
+/**
+ * Process a single country with LLM
+ */
+async function processCountry(
+    countryData: { iso3: string; country: string },
+    jobId: any,
+    retryCount: number = 1
+): Promise<{ success: boolean; error?: string; duration: number }> {
+    const startTime = Date.now();
+
+    try {
+        console.log(`   🔄 ${countryData.country} (${countryData.iso3})${retryCount > 1 ? ` [Retry ${retryCount}]` : ''}...`);
+
+        // Generate summary using LLM
+        const result = await generateCountrySummary(countryData.country, countryData.iso3, []);
+
+        // Get existing country to preserve additional_notes
+        const existingCountry = await CountryModel.findOne({ iso3: countryData.iso3 });
+        const existingNotes = existingCountry?.summary?.additional_notes || [];
+
+        // Merge LLM summary with preserved additional_notes
+        const mergedSummary = {
+            ...result.output.summary,
+            additional_notes: existingNotes
+        };
+
+        // Save to MongoDB
+        await CountryModel.findOneAndUpdate(
+            { iso3: countryData.iso3 },
+            {
+                $set: {
+                    summary: mergedSummary,
+                    lastUpdated: new Date().toISOString(),
+                    version: (Number(existingCountry?.version) || 0) + 1
+                }
+            },
+            { upsert: true }
+        );
+
+        const duration = Date.now() - startTime;
+        console.log(`   ✅ ${countryData.country}: Saved! (${formatDuration(duration)})`);
+
+        // Log success
+        await logCountryRun(jobId, countryData.iso3, countryData.country, 'success', retryCount, undefined, duration);
+
+        return { success: true, duration };
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`   ❌ ${countryData.country}: Failed - ${errorMsg}`);
+
+        // Log failure
+        await logCountryRun(jobId, countryData.iso3, countryData.country, 'failed', retryCount, errorMsg, duration);
+
+        return { success: false, error: errorMsg, duration };
     }
 }
 
@@ -87,6 +220,7 @@ export async function runUpdateJob(
     options?: { specificCountry?: string }
 ): Promise<UpdateJob> {
     const specificCountry = options?.specificCountry?.toUpperCase();
+    const isAllCountries = !specificCountry;
 
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 STARTING UPDATE JOB (${type}${specificCountry ? ` - ${specificCountry} only` : ' - ALL COUNTRIES'})`);
@@ -108,37 +242,45 @@ export async function runUpdateJob(
         let countriesToProcess: Array<{ iso3: string; country: string; lastUpdated?: string }>;
 
         if (specificCountry) {
-            // Single country mode
+            // Single country mode - use old behavior (no batching/retry)
             const country = await CountryModel.findOne({ iso3: specificCountry }).lean() as any;
             if (!country) {
                 throw new Error(`Country not found: ${specificCountry}`);
             }
             countriesToProcess = [{ iso3: country.iso3, country: country.country, lastUpdated: country.lastUpdated }];
             console.log(`📍 Processing single country: ${country.country} (${specificCountry})`);
-        } else {
-            // All countries mode
-            const allCountries = await CountryModel.find().select('iso3 country lastUpdated').lean() as any[];
-            countriesToProcess = allCountries.map(c => ({
-                iso3: c.iso3,
-                country: c.country,
-                lastUpdated: c.lastUpdated
-            }));
-            console.log(`📊 Found ${countriesToProcess.length} countries to process`);
+
+            // Process single country directly
+            const result = await processCountry(countriesToProcess[0], job._id, 1);
+            if (result.success) {
+                job.draftsCreated = 1;
+            }
+
+            job.status = 'completed';
+            job.completedAt = new Date().toISOString();
+            await job.save();
+            return job;
         }
 
-        // Filter out recently updated countries (unless specific country requested)
+        // All countries mode - full batch processing with retry
+        const allCountries = await CountryModel.find().select('iso3 country lastUpdated').lean() as any[];
+        countriesToProcess = allCountries.map(c => ({
+            iso3: c.iso3,
+            country: c.country,
+            lastUpdated: c.lastUpdated
+        }));
+        console.log(`📊 Found ${countriesToProcess.length} countries to process`);
+
+        // Filter out recently updated countries
         const now = Date.now();
         const toProcess: typeof countriesToProcess = [];
-        const skipped: string[] = [];
+        const skipped: typeof countriesToProcess = [];
 
         for (const c of countriesToProcess) {
-            if (specificCountry) {
-                // Always process specific country
-                toProcess.push(c);
-            } else if (c.lastUpdated) {
+            if (c.lastUpdated) {
                 const lastUpdate = new Date(c.lastUpdated).getTime();
-                if (now - lastUpdate < SKIP_IF_UPDATED_WITHIN_MS) {
-                    skipped.push(c.iso3);
+                if (now - lastUpdate < CONFIG.SKIP_IF_UPDATED_WITHIN_MS) {
+                    skipped.push(c);
                 } else {
                     toProcess.push(c);
                 }
@@ -147,8 +289,13 @@ export async function runUpdateJob(
             }
         }
 
+        // Log skipped countries
+        for (const s of skipped) {
+            await logCountryRun(job._id, s.iso3, s.country, 'skipped', 0, 'Recently updated');
+        }
+
         if (skipped.length > 0) {
-            console.log(`⏭️ Skipping ${skipped.length} countries (updated within 15 minutes)`);
+            console.log(`⏭️ Skipping ${skipped.length} countries (updated within 24 hours)`);
         }
 
         if (toProcess.length === 0) {
@@ -161,78 +308,106 @@ export async function runUpdateJob(
 
         console.log(`\n${'─'.repeat(40)}`);
         console.log(`🤖 GENERATING LLM SUMMARIES`);
-        console.log(`   Batch size: ${BATCH_SIZE}, Save every: ${SAVE_EVERY}`);
+        console.log(`   Countries to process: ${toProcess.length}`);
+        console.log(`   Batch size: ${CONFIG.BATCH_SIZE}`);
+        console.log(`   LLM delay: ${CONFIG.DELAY_BETWEEN_LLM_CALLS_MS / 1000}s`);
         console.log(`${'─'.repeat(40)}\n`);
 
-        // Process in batches
+        // Track results
         let processed = 0;
         let errors = 0;
+        const failedCountries: Array<{ iso3: string; country: string; retryCount: number }> = [];
 
-        for (let batchStart = 0; batchStart < toProcess.length; batchStart += BATCH_SIZE) {
-            const batch = toProcess.slice(batchStart, batchStart + BATCH_SIZE);
-            const batchNum = Math.floor(batchStart / BATCH_SIZE) + 1;
-            const totalBatches = Math.ceil(toProcess.length / BATCH_SIZE);
+        // Process in batches
+        for (let batchStart = 0; batchStart < toProcess.length; batchStart += CONFIG.BATCH_SIZE) {
+            const batch = toProcess.slice(batchStart, batchStart + CONFIG.BATCH_SIZE);
+            const batchNum = Math.floor(batchStart / CONFIG.BATCH_SIZE) + 1;
+            const totalBatches = Math.ceil(toProcess.length / CONFIG.BATCH_SIZE);
 
             console.log(`\n📦 Batch ${batchNum}/${totalBatches} (${batch.length} countries)`);
 
             for (let i = 0; i < batch.length; i++) {
                 const countryData = batch[i];
+                const result = await processCountry(countryData, job._id, 1);
 
-                try {
-                    console.log(`   🔄 ${countryData.country} (${countryData.iso3})...`);
-
-                    // Generate summary using LLM with Google Search grounding
-                    const result = await generateCountrySummary(countryData.country, countryData.iso3, []);
-
-                    // Save to MongoDB
-                    await CountryModel.findOneAndUpdate(
-                        { iso3: countryData.iso3 },
-                        {
-                            $set: {
-                                summary: result.output.summary,
-                                lastUpdated: new Date().toISOString(),
-                                version: (await CountryModel.findOne({ iso3: countryData.iso3 }))?.version || 0 + 1
-                            }
-                        },
-                        { upsert: true }
-                    );
-
+                if (result.success) {
                     job.draftsCreated++;
                     processed++;
-                    console.log(`   ✅ ${countryData.country}: Saved!`);
-
-                    // Save job progress every SAVE_EVERY countries
-                    if (processed % SAVE_EVERY === 0) {
-                        await job.save();
-                        console.log(`   💾 Progress saved (${processed}/${toProcess.length})`);
-                    }
-
-                    // Rate limit between LLM calls
-                    if (i < batch.length - 1) {
-                        await sleep(DELAY_BETWEEN_LLM_CALLS_MS);
-                    }
-                } catch (error) {
-                    console.error(`   ❌ ${countryData.country}: Failed - ${error}`);
+                } else {
                     errors++;
+                    failedCountries.push({ ...countryData, retryCount: 1 });
+                }
+
+                // Save job progress periodically
+                if ((processed + errors) % CONFIG.SAVE_EVERY === 0) {
+                    await job.save();
+                    console.log(`   💾 Progress saved (${processed + errors}/${toProcess.length})`);
+                }
+
+                // Rate limit between LLM calls
+                if (i < batch.length - 1) {
+                    await sleep(CONFIG.DELAY_BETWEEN_LLM_CALLS_MS);
                 }
             }
 
             // Delay between batches
-            if (batchStart + BATCH_SIZE < toProcess.length) {
-                console.log(`   ⏳ Waiting ${DELAY_BETWEEN_BATCHES_MS / 1000}s before next batch...`);
-                await sleep(DELAY_BETWEEN_BATCHES_MS);
+            if (batchStart + CONFIG.BATCH_SIZE < toProcess.length) {
+                console.log(`   ⏳ Waiting ${CONFIG.DELAY_BETWEEN_BATCHES_MS / 1000}s before next batch...`);
+                await sleep(CONFIG.DELAY_BETWEEN_BATCHES_MS);
             }
         }
 
-        console.log(`\n📈 Processing complete: ${processed} succeeded, ${errors} failed`);
+        // ============================================================
+        // RETRY LOGIC
+        // ============================================================
+        if (failedCountries.length >= CONFIG.ERROR_THRESHOLD && failedCountries.length > 0) {
+            console.log(`\n${'─'.repeat(40)}`);
+            console.log(`🔄 RETRY MECHANISM TRIGGERED`);
+            console.log(`   Failed: ${failedCountries.length} countries`);
+            console.log(`   Waiting ${CONFIG.RETRY_DELAY_MS / (60 * 1000)} minutes before retry...`);
+            console.log(`${'─'.repeat(40)}\n`);
 
-        // Mark job as completed
+            let retryQueue = [...failedCountries];
+
+            for (let retryRound = 2; retryRound <= CONFIG.MAX_RETRIES && retryQueue.length > 0; retryRound++) {
+                await sleep(CONFIG.RETRY_DELAY_MS);
+
+                console.log(`\n🔁 Retry Round ${retryRound}/${CONFIG.MAX_RETRIES} (${retryQueue.length} countries)`);
+
+                const stillFailing: typeof retryQueue = [];
+
+                for (const countryData of retryQueue) {
+                    const result = await processCountry(countryData, job._id, retryRound);
+
+                    if (result.success) {
+                        job.draftsCreated++;
+                        processed++;
+                        errors--;
+                    } else {
+                        stillFailing.push({ ...countryData, retryCount: retryRound });
+                    }
+
+                    // Rate limit
+                    await sleep(CONFIG.DELAY_BETWEEN_LLM_CALLS_MS);
+                }
+
+                retryQueue = stillFailing;
+                console.log(`   Retry round ${retryRound} complete: ${retryQueue.length} still failing`);
+            }
+        }
+
+        // ============================================================
+        // COMPLETION
+        // ============================================================
+        console.log(`\n📈 Processing complete: ${processed} succeeded, ${errors} failed, ${skipped.length} skipped`);
+
         job.status = 'completed';
         job.completedAt = new Date().toISOString();
         await job.save();
 
         console.log(`\n${'='.repeat(60)}`);
         console.log(`✅ UPDATE JOB COMPLETED`);
+        console.log(`   Job ID: ${job._id}`);
         console.log(`   Countries processed: ${processed}`);
         console.log(`   Errors: ${errors}`);
         console.log(`   Skipped (recently updated): ${skipped.length}`);
@@ -248,4 +423,19 @@ export async function runUpdateJob(
         console.error(`\n❌ UPDATE JOB FAILED: ${job.error}\n`);
         throw error;
     }
+}
+
+/**
+ * Get scheduler status and next run info
+ */
+export function getSchedulerStatus(): {
+    isRunning: boolean;
+    nextRun: string;
+    config: typeof CONFIG;
+} {
+    return {
+        isRunning: scheduledTask !== null,
+        nextRun: getNextAiracRun().toISOString(),
+        config: CONFIG
+    };
 }

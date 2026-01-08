@@ -49,10 +49,11 @@ async function start() {
         await connectDB();
         console.log('✅ MongoDB connected');
 
-        // TODO: Implement proper scheduler with missed job recovery
-        // Currently disabled - jobs can still be triggered manually via admin API
+        // AIRAC Scheduler - Ready but disabled
+        // Uncomment to enable automatic 28-day AIRAC cycle updates (starts Jan 23, 2026 at 2:00 AM)
+        // Manual "Run All" button still works via admin API: POST /api/admin/run-all
         // startScheduler();
-        // console.log('✅ Scheduler initialized');
+        // console.log('✅ AIRAC Scheduler initialized');
 
         app.listen(PORT, () => {
             console.log(`🚀 Server running on http://localhost:${PORT}`);

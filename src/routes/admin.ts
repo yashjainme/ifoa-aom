@@ -6,7 +6,8 @@ import { UpdateJobModel } from '../models/UpdateJob.js';
 import { CountryModel } from '../models/Country.js';
 import { fetchAndExtractSource } from '../services/fetcher.js';
 import { generateCountrySummary } from '../services/llm.js';
-import { runUpdateJob } from '../jobs/scheduler.js';
+import { runUpdateJob, getSchedulerStatus } from '../jobs/scheduler.js';
+import { CountryRunLogModel } from '../models/CountryRunLog.js';
 
 const router = Router();
 
@@ -301,8 +302,9 @@ function validateSummary(summary: unknown): { valid: boolean; errors: string[] }
 
     // Validate array sections
     const arraySections = [
-        'status', 'permit_and_conditions', 'israel_limitation',
-        'key_extracts', 'ops_notes', 'ops_checklist'
+        'additional_notes', 'status', 'permit_and_conditions',
+        'overflight_permits', 'landing_permits',
+        'israel_limitation', 'key_extracts', 'ops_notes', 'ops_checklist'
     ];
 
     for (const section of arraySections) {
@@ -434,8 +436,11 @@ router.put('/countries/:iso3/summary', async (req: Request, res: Response) => {
                 email: String(summary.primary_contact?.email || '').trim(),
                 website: String(summary.primary_contact?.website || '').trim()
             },
+            additional_notes: Array.isArray(summary.additional_notes) ? summary.additional_notes.map((s: unknown) => String(s).trim()).filter((s: string) => s.length > 0) : [],
             status: Array.isArray(summary.status) ? summary.status.map((s: unknown) => String(s).trim()) : [],
             permit_and_conditions: Array.isArray(summary.permit_and_conditions) ? summary.permit_and_conditions.map((s: unknown) => String(s).trim()) : [],
+            overflight_permits: Array.isArray(summary.overflight_permits) ? summary.overflight_permits.map((s: unknown) => String(s).trim()) : [],
+            landing_permits: Array.isArray(summary.landing_permits) ? summary.landing_permits.map((s: unknown) => String(s).trim()) : [],
             israel_limitation: Array.isArray(summary.israel_limitation) ? summary.israel_limitation.map((s: unknown) => String(s).trim()) : [],
             key_extracts: Array.isArray(summary.key_extracts) ? summary.key_extracts.map((s: unknown) => String(s).trim()) : [],
             ops_notes: Array.isArray(summary.ops_notes) ? summary.ops_notes.map((s: unknown) => String(s).trim()) : [],
@@ -510,6 +515,103 @@ router.get('/countries/:iso3', async (req: Request, res: Response) => {
         res.status(500).json({
             success: false,
             error: 'Failed to get country'
+        });
+    }
+});
+
+// POST /api/admin/run-all - Trigger full update job for all countries
+router.post('/run-all', async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.userId;
+
+        console.log(`🚀 Manual RUN ALL triggered by user ${userId}`);
+
+        // Start the job asynchronously (don't wait for completion)
+        runUpdateJob('manual', userId)
+            .then(job => {
+                console.log(`✅ RUN ALL job completed: ${job._id}`);
+            })
+            .catch(error => {
+                console.error('❌ RUN ALL job failed:', error);
+            });
+
+        // Return immediately with job info
+        res.json({
+            success: true,
+            message: 'Update job started for all countries',
+            data: {
+                startedAt: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Run all error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to start update job'
+        });
+    }
+});
+
+// GET /api/admin/scheduler-status - Get scheduler status and config
+router.get('/scheduler-status', async (req: Request, res: Response) => {
+    try {
+        const status = getSchedulerStatus();
+
+        // Get recent job stats
+        const recentJobs = await UpdateJobModel.find()
+            .sort({ startedAt: -1 })
+            .limit(5)
+            .lean();
+
+        // Get run log stats from last job
+        const lastJob = recentJobs[0];
+        let lastJobStats = null;
+
+        if (lastJob) {
+            const logs = await CountryRunLogModel.find({ jobId: lastJob._id }).lean();
+            lastJobStats = {
+                success: logs.filter(l => l.status === 'success').length,
+                failed: logs.filter(l => l.status === 'failed').length,
+                skipped: logs.filter(l => l.status === 'skipped').length
+            };
+        }
+
+        res.json({
+            success: true,
+            data: {
+                ...status,
+                recentJobs,
+                lastJobStats
+            }
+        });
+    } catch (error) {
+        console.error('Scheduler status error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get scheduler status'
+        });
+    }
+});
+
+// GET /api/admin/country-logs/:iso3 - Get run logs for a specific country
+router.get('/country-logs/:iso3', async (req: Request, res: Response) => {
+    try {
+        const { iso3 } = req.params;
+
+        const logs = await CountryRunLogModel.find({ iso3: iso3.toUpperCase() })
+            .sort({ timestamp: -1 })
+            .limit(20)
+            .lean();
+
+        res.json({
+            success: true,
+            data: logs
+        });
+    } catch (error) {
+        console.error('Country logs error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get country logs'
         });
     }
 });

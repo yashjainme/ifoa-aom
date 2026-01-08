@@ -25,8 +25,11 @@ export interface CountrySummary {
     icao_doc_url: string;
     state_rules_url: string;
     primary_contact: PrimaryContact;
+    additional_notes: string[];
     status: string[];
     permit_and_conditions: string[];
+    overflight_permits: string[];
+    landing_permits: string[];
     israel_limitation: string[];
     key_extracts: string[];
     ops_notes: string[];
