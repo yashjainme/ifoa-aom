@@ -53,6 +53,68 @@ interface LlmOutput {
     summary: CountrySummary;
 }
 
+// ============================================================
+// VALIDATION HELPERS - Clean and validate contact data
+// ============================================================
+
+/**
+ * Check if a string looks like a valid phone number
+ * Valid: +44 20 1234 5678, (555) 123-4567, +1-800-555-1234
+ * Invalid: "Refer to website", "Contact via email"
+ */
+function isValidPhone(phone: string): boolean {
+    if (!phone || phone.length < 7) return false;
+    // Must contain at least 6 digits
+    const digitCount = (phone.match(/\d/g) || []).length;
+    if (digitCount < 6) return false;
+    // Should not contain too many letters (indicates it's a note, not a number)
+    const letterCount = (phone.match(/[a-zA-Z]/g) || []).length;
+    if (letterCount > 5) return false;
+    return true;
+}
+
+/**
+ * Check if a string looks like a valid email
+ * Valid: user@domain.com, info@gov.uk
+ * Invalid: "Contact via website", "email@", "@domain"
+ */
+function isValidEmail(email: string): boolean {
+    if (!email) return false;
+    // Basic email pattern
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailPattern.test(email);
+}
+
+/**
+ * Check if a string looks like a valid URL
+ * Valid: https://example.com, http://gov.uk/page
+ * Invalid: "example.com", "see website", truncated URLs
+ */
+function isValidUrl(url: string): boolean {
+    if (!url) return false;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+    if (url.length < 15) return false; // Too short
+    // Must contain at least one dot after protocol
+    const afterProtocol = url.replace(/^https?:\/\//, '');
+    if (!afterProtocol.includes('.')) return false;
+    return true;
+}
+
+/**
+ * Auto-fix URL by adding https:// if missing
+ */
+function fixUrl(url: string): string {
+    if (!url) return '';
+    url = url.trim();
+    // Already has protocol
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    // Looks like a domain
+    if (url.includes('.') && !url.includes(' ') && url.length > 5) {
+        return 'https://' + url;
+    }
+    return url; // Return as-is if can't fix
+}
+
 // Streamlined prompt with clearer structure and expectations
 const GROUNDING_PROMPT = `You are compiling operational intelligence for aviation cargo operators. Your task is to produce a factual regulatory brief for the carriage, transit, import, export, and overflight of munitions of war (weapons, ammunition, explosives, military material) by air.
 
@@ -192,7 +254,7 @@ async function callGeminiApi(prompt: string): Promise<string> {
     const primaryModel = process.env.LLM_MODEL || 'gemini-2.5-flash-lite';
     const fallbackModels = [
         primaryModel,
-        'gemini-2.5-flash-lite-preview-09-2025',
+        'gemini-2.5-flash-lite',
         'gemini-2.5-flash',
         'gemini-2.5-flash-preview-09-2025',
     ].filter((m, i, arr) => arr.indexOf(m) === i); // Remove duplicates if primary is in list
@@ -374,13 +436,22 @@ function parseResponse(response: string): LlmOutput {
 
         const ensureContactArray = (val: unknown): AuthorityContact[] => {
             if (!Array.isArray(val)) return [];
-            return val.filter(c => c && typeof c === 'object').map(c => ({
-                name: String(c.name || '').trim(),
-                role: String(c.role || '').trim(),
-                phone: String(c.phone || '').trim(),
-                email: String(c.email || '').trim(),
-                url: String(c.url || '').trim()
-            })).filter(c => c.name || c.email || c.phone); // Keep only contacts with some data
+            return val.filter(c => c && typeof c === 'object').map(c => {
+                const rawPhone = String(c.phone || '').trim();
+                const rawEmail = String(c.email || '').trim();
+                const rawUrl = String(c.url || '').trim();
+
+                return {
+                    name: String(c.name || '').trim(),
+                    role: String(c.role || '').trim(),
+                    // Keep phone as-is but flag validation in frontend
+                    phone: rawPhone,
+                    // Keep email as-is but flag validation in frontend
+                    email: rawEmail,
+                    // Auto-fix URL if missing protocol
+                    url: fixUrl(rawUrl)
+                };
+            }).filter(c => c.name || c.email || c.phone); // Keep only contacts with some data
         };
 
         const ensureRefArray = (val: unknown): Reference[] => {
@@ -409,10 +480,17 @@ function parseResponse(response: string): LlmOutput {
                 return { phone: '', email: '', website: '' };
             }
             const c = val as Record<string, unknown>;
+            const rawPhone = String(c.phone || '').trim();
+            const rawEmail = String(c.email || '').trim();
+            const rawWebsite = String(c.website || '').trim();
+
             return {
-                phone: String(c.phone || '').trim(),
-                email: String(c.email || '').trim(),
-                website: String(c.website || '').trim()
+                // Keep phone as-is (frontend will handle display)
+                phone: rawPhone,
+                // Keep email as-is (frontend will handle display)
+                email: rawEmail,
+                // Auto-fix website URL if missing protocol
+                website: fixUrl(rawWebsite)
             };
         };
 
